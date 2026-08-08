@@ -19,6 +19,12 @@ import (
 
 const UserNameMaxLength = 20
 
+const generatedAffiliateCodeLength = 12
+
+func GenerateAffiliateCode() (string, error) {
+	return common.GenerateRandomCharsKey(generatedAffiliateCodeLength)
+}
+
 var userSortColumns = map[string]string{
 	"id":            "id",
 	"username":      "username",
@@ -226,6 +232,7 @@ func generateDefaultSidebarConfigForRole(userRole int) string {
 			"channel":    true,
 			"models":     true,
 			"redemption": true,
+			"invitation": true,
 			"user":       true,
 			"setting":    false, // 管理员不能访问系统设置
 		}
@@ -236,6 +243,7 @@ func generateDefaultSidebarConfigForRole(userRole int) string {
 			"channel":    true,
 			"models":     true,
 			"redemption": true,
+			"invitation": true,
 			"user":       true,
 			"setting":    true,
 		}
@@ -615,7 +623,11 @@ func (user *User) Insert(inviterId int) error {
 				return err
 			}
 			user.Quota = common.QuotaForNewUser
-			user.AffCode = common.GetRandomString(4)
+			affCode, err := GenerateAffiliateCode()
+			if err != nil {
+				return err
+			}
+			user.AffCode = affCode
 
 			// 初始化用户设置，包括默认的边栏配置
 			if user.Setting == "" {
@@ -679,7 +691,11 @@ func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
 			return err
 		}
 		user.Quota = common.QuotaForNewUser
-		user.AffCode = common.GetRandomString(4)
+		affCode, err := GenerateAffiliateCode()
+		if err != nil {
+			return err
+		}
+		user.AffCode = affCode
 
 		// 初始化用户设置
 		if user.Setting == "" {
@@ -942,6 +958,9 @@ func (user *User) HardDelete() error {
 
 func deleteUserAuthenticationData(tx *gorm.DB, userId int) error {
 	if err := releaseAllExternalIdentitiesWithTx(tx, userId); err != nil {
+		return err
+	}
+	if err := deleteLegacyAuthIdentitySourcesWithTx(tx, userId); err != nil {
 		return err
 	}
 	for _, authenticationData := range []any{
