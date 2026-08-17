@@ -15,6 +15,11 @@ import (
 type HTTPTransportPolicy struct {
 	Protocol string // dto.HTTPProtocolAuto or dto.HTTPProtocolHTTP1
 	Shards   int    // 1..dto.MaxHTTP2ConnectionShards
+	// DisableKeepAlives forces a fresh outbound connection (and proxy tunnel)
+	// per request. Proxy-pool gateways anchor an exit IP to one connection, so
+	// reusing keep-alive connections pins a single IP; disabling them lets the
+	// pool rotate exits per request.
+	DisableKeepAlives bool
 }
 
 var httpTransportPolicyWarnings sync.Map

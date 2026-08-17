@@ -310,6 +310,12 @@ func newTransportFactory(proxyURL *url.URL, tlsConfig *tls.Config) (func() *http
 }
 
 func newHTTPClientFromPolicy(policy HTTPTransportPolicy, proxyURL *url.URL, tlsConfig *tls.Config) (*http.Client, error) {
+	// Proxy-pool gateways anchor an exit IP to one outbound connection;
+	// keep-alive reuse would pin a single IP and exhaust its per-IP quota.
+	// In HTTP/1 mode, open a fresh tunnel per request so the pool rotates exits.
+	if proxyURL != nil && policy.Protocol == dto.HTTPProtocolHTTP1 {
+		policy.DisableKeepAlives = true
+	}
 	factory, err := newTransportFactory(proxyURL, tlsConfig)
 	if err != nil {
 		return nil, err

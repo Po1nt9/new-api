@@ -124,6 +124,7 @@ func applyHTTPTransportPolicy(transport *http.Transport, policy HTTPTransportPol
 	}
 	if policy.Protocol == dto.HTTPProtocolHTTP1 {
 		applyHTTP1Force(transport)
+		transport.DisableKeepAlives = policy.DisableKeepAlives
 		return
 	}
 	transport.ForceAttemptHTTP2 = true
