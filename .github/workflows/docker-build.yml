@@ -13,8 +13,9 @@ on:
         type: string
 
 env:
-  # 追上游 = merge 新官方 tag 进 main 后，把这里 bump 成新 tag 名
-  UPSTREAM_BASE: v1.0.0-rc.24
+  # 追上游 = git merge 新官方 tag 进 main 后，把这里 bump 成新 tag 名，
+  # 并把该基线 tag push 到本 fork（CI checkout 只看 fork 仓库的 refs）
+  UPSTREAM_BASE: v1.0.0-rc.25
   IMAGE: ghcr.io/po1nt9/new-api
 
 jobs:
