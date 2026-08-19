@@ -1,7 +1,7 @@
 # 0002. Empty Response Retry (Streamed and Non-Streamed)
 
 ## Status
-Accepted (特批后端变更, precedes implementation)
+Accepted (特批后端变更; implemented & deployed 2026-08-19 as v1.0.0-rc.25-po1nt9.3, `RetryOnEmptyResponse=true`)
 
 ## Context
 On 2026-08-18 14:37–14:52 the OpenCodeZen free upstream (channel 48) intermittently returned
