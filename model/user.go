@@ -110,6 +110,7 @@ type User struct {
 	LastLoginAt      int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
 	AuthVersion      int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
 	AdminPermissions map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+	InvitationCode   string                     `json:"invitation_code" gorm:"-:all"`
 }
 
 func (user *User) ToBaseUser() *UserBase {
@@ -633,12 +634,39 @@ func ensureEmailAvailableWithTx(tx *gorm.DB, email string, excludeUserID int) er
 }
 
 func (user *User) Insert(inviterId int) error {
+	return user.InsertWithInvitation(0, inviterId)
+}
+
+func (user *User) InsertWithInvitation(invitationId int, inviterId int) error {
+	var invitation *Invitation
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		return withNormalizedEmailLock(tx, user.Email, func(tx *gorm.DB) error {
 			if err := user.prepareForInsert(tx); err != nil {
 				return err
 			}
-			user.Quota = common.QuotaForNewUser
+			if invitationId > 0 {
+				inv := &Invitation{}
+				err := lockForUpdate(tx).First(inv, invitationId).Error
+				if err != nil {
+					return errors.New("无效的邀请码")
+				}
+				if inv.Status != common.InvitationCodeStatusEnabled {
+					return errors.New("该邀请码已被使用")
+				}
+				if inv.ExpiredTime != 0 && inv.ExpiredTime < common.GetTimestamp() {
+					return errors.New("该邀请码已过期")
+				}
+				invitation = inv
+				user.Quota = common.QuotaForNewUser + inv.Quota
+				if inv.Group != "" {
+					user.Group = inv.Group
+				}
+			} else {
+				user.Quota = common.QuotaForNewUser
+			}
+			if inviterId > 0 {
+				user.InviterId = inviterId
+			}
 			user.AffCode = common.GetRandomString(4)
 
 			// 初始化用户设置，包括默认的边栏配置
@@ -648,13 +676,35 @@ func (user *User) Insert(inviterId int) error {
 				user.SetSetting(defaultSetting)
 			}
 
-			return tx.Create(user).Error
+			if err := tx.Create(user).Error; err != nil {
+				return err
+			}
+
+			if invitationId > 0 && invitation != nil {
+				result := tx.Model(&Invitation{}).
+					Where("id = ? AND status = ?", invitation.Id, common.InvitationCodeStatusEnabled).
+					Updates(map[string]interface{}{
+						"used_time":    common.GetTimestamp(),
+						"status":       common.InvitationCodeStatusUsed,
+						"used_user_id": user.Id,
+					})
+				if result.Error != nil {
+					return result.Error
+				}
+				if result.RowsAffected == 0 {
+					return errors.New("该邀请码已被使用")
+				}
+			}
+			return nil
 		})
 	}); err != nil {
 		return err
 	}
 
 	user.finishInsert(inviterId)
+	if invitation != nil && invitation.Quota > 0 {
+		RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("使用邀请码注册赠送 %s", logger.LogQuota(invitation.Quota)))
+	}
 	return nil
 }
 

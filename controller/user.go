@@ -260,24 +260,59 @@ func Register(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserExists)
 		return
 	}
-	affCode := user.AffCode // this code is the inviter's code, not the user's own code
-	inviterId, _ := model.GetUserIdByAffCode(affCode)
+	inviteCode := strings.TrimSpace(user.InvitationCode)
+	var invitationId int
+	if inviteCode != "" {
+		invitation, err := model.GetInvitationByKey(inviteCode)
+		if err != nil || invitation.Id == 0 {
+			common.ApiErrorI18n(c, i18n.MsgInvitationInvalid)
+			return
+		}
+		if invitation.Status == common.InvitationCodeStatusDisabled {
+			common.ApiErrorI18n(c, i18n.MsgInvitationInvalid)
+			return
+		}
+		if invitation.Status == common.InvitationCodeStatusUsed {
+			common.ApiErrorI18n(c, i18n.MsgInvitationUsed)
+			return
+		}
+		if invitation.ExpiredTime != 0 && invitation.ExpiredTime < common.GetTimestamp() {
+			common.ApiErrorI18n(c, i18n.MsgInvitationExpired)
+			return
+		}
+		invitationId = invitation.Id
+	} else if common.InvitationCodeRequired {
+		common.ApiErrorI18n(c, i18n.MsgInvitationNotProvided)
+		return
+	}
+
+	var inviterId int
+	if user.AffCode != "" {
+		inviterId, _ = model.GetUserIdByAffCode(user.AffCode)
+	}
+
 	cleanUser := model.User{
 		Username:    user.Username,
 		Password:    user.Password,
 		DisplayName: user.Username,
-		InviterId:   inviterId,
 		Role:        common.RoleCommonUser, // 明确设置角色为普通用户
 	}
 	if common.EmailVerificationEnabled {
 		cleanUser.Email = user.Email
 	}
-	if err := cleanUser.Insert(inviterId); err != nil {
-		if errors.Is(err, model.ErrEmailAlreadyTaken) {
+
+	var insertErr error
+	if invitationId > 0 {
+		insertErr = cleanUser.InsertWithInvitation(invitationId, inviterId)
+	} else {
+		insertErr = cleanUser.Insert(inviterId)
+	}
+	if insertErr != nil {
+		if errors.Is(insertErr, model.ErrEmailAlreadyTaken) {
 			common.ApiErrorI18n(c, i18n.MsgUserEmailAlreadyTaken)
 			return
 		}
-		common.ApiError(c, err)
+		common.ApiError(c, insertErr)
 		return
 	}
 

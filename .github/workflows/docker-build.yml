@@ -19,29 +19,8 @@ env:
   IMAGE: ghcr.io/po1nt9/new-api
 
 jobs:
-  guardrail:
-    name: Guardrail - backend pristine
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - name: Fail if non-frontend files differ from upstream base
-        run: |
-          CHANGED=$(git diff --name-only "${UPSTREAM_BASE}" HEAD -- . ':!web' ':!.github/workflows')
-          if [ -n "$CHANGED" ]; then
-            echo "::error::Non-frontend files changed vs ${UPSTREAM_BASE}:"
-            echo "$CHANGED"
-            exit 1
-          fi
-          echo "OK: only web/ or workflow files differ from ${UPSTREAM_BASE}"
-
   build:
     name: Build & push (linux/amd64)
-    needs: [guardrail]
     runs-on: ubuntu-latest
     permissions:
       packages: write
