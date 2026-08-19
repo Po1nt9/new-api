@@ -20,7 +20,7 @@ env:
 
 jobs:
   guardrail:
-    name: Guardrail - backend pristine (allowlist: invitation-code, empty-response-retry)
+    name: "Guardrail - backend pristine (allowlist: invitation-code, empty-response-retry)"
     runs-on: ubuntu-latest
     steps:
       - name: Check out
