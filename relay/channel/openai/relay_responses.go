@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,6 +33,13 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 	if oaiError := responsesResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+	}
+
+	// (fork, ADR 0002) An empty completed response (no output items, no billed
+	// completion) must not be forwarded as a success; fail over instead.
+	if operation_setting.RetryOnEmptyResponse && len(responsesResponse.Output) == 0 && (responsesResponse.Usage == nil || responsesResponse.Usage.OutputTokens == 0) {
+		logger.LogError(c, "empty non-stream response, retrying on next channel")
+		return &dto.Usage{}, emptyResponseError(true)
 	}
 
 	// 写入新的 response body
@@ -85,6 +93,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	imageCounter := &relaycommon.ImageGenerationCallCounter{}
 	imageCommitted := false
 
+	// (fork, ADR 0002) Buffer opener events until the first meaningful one so an
+	// empty stream can still fail over without having committed bytes to the client.
+	buffering := operation_setting.RetryOnEmptyResponse
+	var pendingFlush []string
+	streamingStarted := false
+	sawToolOutput := false
+
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 
 		// 检查当前数据是否包含 completed 状态和 usage 信息
@@ -94,7 +109,25 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			sr.Error(err)
 			return
 		}
-		sendResponsesStreamData(c, streamResponse, data)
+		if buffering {
+			if streamingStarted {
+				sendResponsesStreamData(c, streamResponse, data)
+			} else if isMeaningfulResponsesEvent(&streamResponse) {
+				streamingStarted = true
+				for _, pending := range pendingFlush {
+					var pendingResponse dto.ResponsesStreamResponse
+					if err := common.UnmarshalJsonStr(pending, &pendingResponse); err == nil {
+						sendResponsesStreamData(c, pendingResponse, pending)
+					}
+				}
+				pendingFlush = nil
+				sendResponsesStreamData(c, streamResponse, data)
+			} else {
+				pendingFlush = append(pendingFlush, data)
+			}
+		} else {
+			sendResponsesStreamData(c, streamResponse, data)
+		}
 		switch streamResponse.Type {
 		case "response.completed", "response.done":
 			if streamResponse.Response != nil {
@@ -131,6 +164,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				imageCounter.Commit(info)
 				imageCommitted = true
 			}
+			if streamResponse.Response != nil && len(streamResponse.Response.Output) > 0 {
+				sawToolOutput = true
+			}
 		case "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
 			if !imageCommitted {
 				imageCounter.Reset()
@@ -145,14 +181,18 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				switch streamResponse.Item.Type {
 				case dto.BuildInCallWebSearchCall:
 					info.CountBillableToolCall(dto.BuildInCallWebSearchCall, "")
+					sawToolOutput = true
 				case dto.BuildInCallFileSearchCall:
 					info.CountBillableToolCall(dto.BuildInCallFileSearchCall, "")
+					sawToolOutput = true
 				case dto.BuildInCallFunctionCall:
 					info.CountBillableToolCall(dto.BuildInCallFunctionCall, streamResponse.Item.Name)
+					sawToolOutput = true
 				case dto.ResponsesOutputTypeImageGenerationCall:
 					if !imageCommitted {
 						imageCounter.Observe(streamResponse.Item, streamResponse.OutputIndex)
 					}
+					sawToolOutput = true
 				}
 			}
 		}
@@ -174,5 +214,54 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
+	// (fork, ADR 0002) An empty stream (no text, no tool invocation, no billed
+	// completion) must not reach the client as a success. If nothing was ever
+	// released from the buffer the response is uncommitted and can be retried on
+	// another channel; otherwise the error is logged/counted but never replayed.
+	if buffering && responseTextBuilder.Len() == 0 && !sawToolOutput && usage.CompletionTokens == 0 {
+		if !streamingStarted {
+			logger.LogError(c, "empty response stream, retrying on next channel")
+			return usage, emptyResponseError(true)
+		}
+		return usage, emptyResponseError(false)
+	}
+	if buffering && !streamingStarted && len(pendingFlush) > 0 {
+		// Pathological case: no delta/item events but the stream is not classified
+		// empty (e.g. usage-only completion). Release everything that was held.
+		for _, pending := range pendingFlush {
+			var pendingResponse dto.ResponsesStreamResponse
+			if err := common.UnmarshalJsonStr(pending, &pendingResponse); err == nil {
+				sendResponsesStreamData(c, pendingResponse, pending)
+			}
+		}
+	}
+
 	return usage, nil
+}
+
+// isMeaningfulResponsesEvent reports whether an event carries real model output.
+// Declarations (output_item.added), lifecycle events (created/in_progress) and
+// reasoning summaries do not count: they must not release the ADR 0002 buffer.
+func isMeaningfulResponsesEvent(sr *dto.ResponsesStreamResponse) bool {
+	if sr.Type == "response.output_text.delta" {
+		return sr.Delta != ""
+	}
+	if sr.Type == dto.ResponsesOutputTypeItemDone {
+		return sr.Item != nil
+	}
+	return false
+}
+
+func emptyResponseError(retryable bool) *types.NewAPIError {
+	if retryable {
+		return types.NewOpenAIError(
+			fmt.Errorf("upstream returned an empty response (no content/tool calls)"),
+			types.ErrorCodeEmptyResponse, http.StatusBadGateway,
+		)
+	}
+	return types.NewOpenAIError(
+		fmt.Errorf("upstream returned an empty response (no content/tool calls)"),
+		types.ErrorCodeEmptyResponse, http.StatusBadGateway,
+		types.ErrOptionWithSkipRetry(),
+	)
 }

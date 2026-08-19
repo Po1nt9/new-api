@@ -5,6 +5,13 @@ import "strings"
 var DemoSiteEnabled = false
 var SelfUseModeEnabled = false
 
+// RetryOnEmptyResponse (fork, ADR 0002): when true, a stream/non-stream response that
+// finishes with no text, no tool calls and no billed completion tokens is converted
+// into a retryable 502 empty_response error instead of being relayed as a success.
+// Default false = upstream stock behavior; upstream rejected auto-retry over
+// double-billing concerns on providers that bill moderation-filtered empties.
+var RetryOnEmptyResponse = false
+
 var AutomaticDisableKeywords = []string{
 	"Your credit balance is too low",
 	"This organization has been disabled.",

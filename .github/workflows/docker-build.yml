@@ -20,7 +20,7 @@ env:
 
 jobs:
   guardrail:
-    name: Guardrail - backend pristine (allowlist: invitation-code)
+    name: Guardrail - backend pristine (allowlist: invitation-code, empty-response-retry)
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -31,14 +31,19 @@ jobs:
 
       - name: Fail if non-frontend files differ from upstream base (outside allowlist)
         run: |
-          # 白名单 = 2026-08-19 特批上线的邀请码注册系统（ADR 0001）。
+          # 白名单 = 2026-08-19 特批上线的邀请码注册系统（ADR 0001）
+          #          + 2026-08-19 特批上线的空回重试（ADR 0002）。
           # 其余非 web/ 文件与官方基线有差异即红；白名单文件内的上游合并仍需人工 review。
           CHANGED=$(git diff --name-only "${UPSTREAM_BASE}" HEAD -- \
             . ':!web' ':!.github/workflows' \
             ':!CONTEXT.md' ':!docs' ':!.husky' \
             ':!controller/invitation.go' ':!controller/misc.go' ':!controller/user.go' ':!controller/user_register_test.go' \
+            ':!controller/relay.go' \
             ':!model/invitation.go' ':!model/invitation_test.go' ':!model/main.go' ':!model/option.go' ':!model/user.go' \
-            ':!router/api-router.go' ':!common/constants.go' ':!i18n/keys.go' ':!i18n/locales')
+            ':!router/api-router.go' ':!common/constants.go' ':!i18n/keys.go' ':!i18n/locales' \
+            ':!relay/channel/openai/relay-openai.go' ':!relay/channel/openai/relay_responses.go' \
+            ':!relay/channel/openai/empty_response_retry_test.go' \
+            ':!setting/operation_setting/operation_setting.go')
           if [ -n "$CHANGED" ]; then
             echo "::error::Non-frontend files changed beyond allowlist vs ${UPSTREAM_BASE}:"
             echo "$CHANGED"

@@ -92,6 +92,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	defer func() {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
+			// (fork, ADR 0002) Never append an error body to an already committed
+			// stream response (e.g. empty-response detected after partial output).
+			if relayFormat != types.RelayFormatOpenAIRealtime && c.Writer.Written() {
+				logger.LogError(c, "skipping error response write: response already committed")
+				return
+			}
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:

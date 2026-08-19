@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -125,8 +126,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// 检查是否为音频模型
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
 
+	// (fork, ADR 0002) Hold opener chunks until real output lands so an empty
+	// stream never commits bytes and can fail over to another channel.
+	buffering := operation_setting.RetryOnEmptyResponse
+	var pendingFlush []string
+	streamingStarted := false
+
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
-		if lastStreamData != "" {
+		if lastStreamData != "" && (!buffering || streamingStarted) {
 			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 				common.SysLog("error handling stream format: " + err.Error())
 				sr.Error(err)
@@ -136,6 +143,22 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			// 对音频模型，保存倒数第二个stream data
 			if isAudioModel && lastStreamData != "" {
 				secondLastStreamData = lastStreamData
+			}
+
+			if buffering && !streamingStarted && (responseTextBuilder.Len() > 0 || toolCount > 0) {
+				streamingStarted = true
+				for _, held := range pendingFlush {
+					if err := HandleStreamFormat(c, info, held, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+						common.SysLog("error handling stream format: " + err.Error())
+						sr.Error(err)
+						break
+					}
+				}
+				pendingFlush = nil
+				lastStreamData = "" // released via pendingFlush above
+			}
+			if buffering && !streamingStarted {
+				pendingFlush = append(pendingFlush, data)
 			}
 
 			lastStreamData = data
@@ -173,7 +196,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
-		if shouldSendLastResp {
+		if shouldSendLastResp && (!buffering || streamingStarted) {
+			// (fork, ADR 0002) when the buffer never opened, the final chunk is
+			// still held in pendingFlush and released (or dropped) after the
+			// empty classification below.
 			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 		}
 	}
@@ -189,9 +215,67 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
 	}
 
+	// (fork, ADR 0002) An empty stream (no content/reasoning/tool output) must not
+	// be finalized as a success. Nothing was released from the buffer, so the
+	// response is uncommitted and the request can be retried on another channel.
+	// content_filter finishes are policy outcomes, not transient faults: forward them.
+	if buffering && !streamingStarted {
+		if responseTextBuilder.Len() == 0 && toolCount == 0 && !streamFinishedOnContentFilter(lastStreamData) {
+			logger.LogError(c, "empty response stream, retrying on next channel")
+			return usage, emptyResponseError(true)
+		}
+		for _, held := range pendingFlush {
+			if err := HandleStreamFormat(c, info, held, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+				common.SysLog("error handling stream format: " + err.Error())
+				break
+			}
+		}
+		pendingFlush = nil
+		lastStreamData = "" // already released above
+	}
+
 	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
 
 	return usage, nil
+}
+
+// streamFinishedOnContentFilter reports whether the final stream chunk carries a
+// content_filter finish reason (ADR 0002: moderation outcomes are not retried).
+func streamFinishedOnContentFilter(data string) bool {
+	if data == "" {
+		return false
+	}
+	var lastStreamResponse dto.ChatCompletionsStreamResponse
+	if err := common.UnmarshalJsonStr(data, &lastStreamResponse); err != nil {
+		return false
+	}
+	for _, choice := range lastStreamResponse.Choices {
+		if choice.FinishReason != nil && *choice.FinishReason == constant.FinishReasonContentFilter {
+			return true
+		}
+	}
+	return false
+}
+
+// openAITextResponseHasOutput reports whether a non-stream response carries any
+// meaningful output: content, reasoning or tool calls. A content_filter finish is
+// a policy outcome, not a transient fault, and counts as output (stays forwarded).
+func openAITextResponseHasOutput(r *dto.OpenAITextResponse) bool {
+	for _, choice := range r.Choices {
+		if choice.FinishReason == constant.FinishReasonContentFilter {
+			return true
+		}
+		if choice.Message.GetReasoningContent() != "" {
+			return true
+		}
+		if choice.Message.StringContent() != "" {
+			return true
+		}
+		if len(choice.Message.ParseToolCalls()) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func collectStreamFunctionCallNames(data string, seen map[string]struct{}, names *[]string) {
@@ -251,6 +335,14 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+	}
+
+	// (fork, ADR 0002) An empty completed response must not be forwarded as a
+	// success; fail over to another channel instead. content_filter finishes are
+	// policy outcomes and stay forwarded.
+	if operation_setting.RetryOnEmptyResponse && !openAITextResponseHasOutput(&simpleResponse) {
+		logger.LogError(c, "empty non-stream response, retrying on next channel")
+		return &simpleResponse.Usage, emptyResponseError(true)
 	}
 
 	for _, choice := range simpleResponse.Choices {
