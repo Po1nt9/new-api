@@ -2,17 +2,27 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/logo.png" />
+    <!-- Theme-aware favicons: browsers that don't support the media/SVG icon
+         fall back to the first matching link (black spark on light). -->
+    <link
+      rel="icon"
+      type="image/png"
+      media="(prefers-color-scheme: light)"
+      href="/logo.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      media="(prefers-color-scheme: dark)"
+      href="/logo-dark.png"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="google" content="notranslate" />
 
     <!-- Primary Meta Tags -->
     <title>Po1nt9</title>
     <meta name="title" content="Po1nt9" />
-    <meta
-      name="description"
-      content="Po1nt9 — AIGC. INSTANT."
-    />
+    <meta name="description" content="Po1nt9 — AIGC. INSTANT." />
 
     <meta name="theme-color" content="#fff" />
     <!--umami-->

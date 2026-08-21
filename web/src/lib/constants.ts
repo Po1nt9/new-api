@@ -21,12 +21,14 @@ For commercial licensing, please contact support@quantumnous.com
  */
 
 // System Configuration Defaults
-export const DEFAULT_SYSTEM_NAME = 'Po1nt9'
-export const DEFAULT_LOGO = '/logo.png'
+export const DEFAULT_SYSTEM_NAME = "Po1nt9";
+export const DEFAULT_LOGO = "/logo.png";
+// Theme counterpart of DEFAULT_LOGO (white spark) for the app dark theme
+export const DEFAULT_LOGO_DARK = "/logo-dark.png";
 
 // LocalStorage Keys
 export const STORAGE_KEYS = {
-  SYSTEM_NAME: 'system_name',
-  LOGO: 'logo',
-  FOOTER_HTML: 'footer_html',
-} as const
+  SYSTEM_NAME: "system_name",
+  LOGO: "logo",
+  FOOTER_HTML: "footer_html",
+} as const;
