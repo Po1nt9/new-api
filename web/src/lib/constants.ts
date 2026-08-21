@@ -22,9 +22,11 @@ For commercial licensing, please contact support@quantumnous.com
 
 // System Configuration Defaults
 export const DEFAULT_SYSTEM_NAME = "Po1nt9";
-export const DEFAULT_LOGO = "/logo.png";
+// ?v= busts the 7-day browser cache on logo assets; bump it whenever the
+// image files are replaced.
+export const DEFAULT_LOGO = "/logo.png?v=v13";
 // Theme counterpart of DEFAULT_LOGO (white spark) for the app dark theme
-export const DEFAULT_LOGO_DARK = "/logo-dark.png";
+export const DEFAULT_LOGO_DARK = "/logo-dark.png?v=v13";
 
 // LocalStorage Keys
 export const STORAGE_KEYS = {
